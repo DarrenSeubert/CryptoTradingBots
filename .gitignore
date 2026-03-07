@@ -132,10 +132,9 @@ $RECYCLE.BIN/
 
 _NCrunch*
 
-# Constants
-Constants.cs
+# Secrets
+Secrets.cs
 
-# VS Code
-.vscode*
+# Other
 Example.py
 ScalpingInfo.pdf
