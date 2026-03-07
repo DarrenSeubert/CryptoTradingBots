@@ -1,8 +1,15 @@
-﻿using Alpaca.Markets;
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+
+using Alpaca.Markets;
 
 namespace CryptoTradingBot;
 
-internal sealed class ScalpingBot {
+internal static class ScalpingBot
+{
     private const string SYMBOL = "SHIB/USD";
     private const string SYMBOL_NS = "SHIBUSD";
 
@@ -27,12 +34,14 @@ internal sealed class ScalpingBot {
 
     private static List<Guid> executedOrders = new List<Guid>();
 
-    public static async Task Main() {
+    public static async Task Main()
+    {
         IAlpacaCryptoDataClient dClient = Environments.Paper.GetAlpacaCryptoDataClient(new SecretKey(Constants.KEY_ID, Constants.SECRET_KEY));
         IAlpacaTradingClient tClient = Environments.Paper.GetAlpacaTradingClient(new SecretKey(Constants.KEY_ID, Constants.SECRET_KEY));
         IAccount account;
 
-        while (true) {
+        while (true)
+        {
             Console.WriteLine("-----------------------------------");
             string currentTime = DateTime.UtcNow.ToString();
             Console.WriteLine("Current Time: " + currentTime.Substring(currentTime.Length - 10));
@@ -44,12 +53,14 @@ internal sealed class ScalpingBot {
         }
     }
 
-    public static async Task<IReadOnlyList<IBar>> getHistoricalData(IAlpacaCryptoDataClient dClient, IAlpacaTradingClient tClient, bool logInfo) {
+    public static async Task<IReadOnlyList<IBar>> getHistoricalData(IAlpacaCryptoDataClient dClient, IAlpacaTradingClient tClient, bool logInfo)
+    {
         DateTime end = DateTime.UtcNow;
         DateTime start = end.AddMinutes(-HISTORICAL_DATA_MINS);
         IReadOnlyList<IBar> bars = (await dClient.ListHistoricalBarsAsync(new HistoricalCryptoBarsRequest(SYMBOL, start, end, BarTimeFrame.Minute))).Items;
 
-        if (logInfo) {
+        if (logInfo)
+        {
             writeHistoryToFile(bars);
             decimal startPrice = bars.First().Open;
             decimal endPrice = bars.Last().Close;
@@ -58,15 +69,18 @@ internal sealed class ScalpingBot {
             Console.WriteLine($"{SYMBOL} moved {percentChange:P} over the last {HISTORICAL_DATA_MINS} mins.");
         }
 
-        decimal currentPrice = bars.Last().Close;
+        currentPrice = bars.Last().Close;
         decimal minLowPrice = bars.First().Low;
         decimal maxHighPrice = bars.First().High;
-        foreach (IBar bar in bars) {
-            if (minLowPrice > bar.Low) {
+        foreach (IBar bar in bars)
+        {
+            if (minLowPrice > bar.Low)
+            {
                 minLowPrice = bar.Low;
             }
 
-            if (maxHighPrice < bar.High) {
+            if (maxHighPrice < bar.High)
+            {
                 maxHighPrice = bar.High;
             }
         }
@@ -76,23 +90,27 @@ internal sealed class ScalpingBot {
         spread = sellPrice - buyPrice;
         totalFees = (buyPrice * TRADING_FEE) + (sellPrice * TRADING_FEE);
 
-        try {
+        try
+        {
             IPosition symbolPos = await tClient.GetPositionAsync(SYMBOL_NS);
-            decimal currentPosition = symbolPos.Quantity;
+            currentPosition = symbolPos.Quantity;
             buyOrder = false;
         }
-        catch (RestClientErrorException) {
+        catch (RestClientErrorException)
+        {
             sellOrder = false;
         }
 
         return bars;
     }
 
-    private static void writeHistoryToFile(IReadOnlyList<IBar> bars) {
+    private static void writeHistoryToFile(IReadOnlyList<IBar> bars)
+    {
         string timeOutput = $"Last {HISTORICAL_DATA_MINS} Minutes Report:\n";
         string priceOutput = "\n";
         string currentTime = "";
-        foreach (IBar bar in bars) {
+        foreach (IBar bar in bars)
+        {
             currentTime = bar.TimeUtc.ToString();
             timeOutput += currentTime.Substring(currentTime.Length - 10) + "\n";
             priceOutput += bar.Vwap + "\n";
@@ -104,8 +122,10 @@ internal sealed class ScalpingBot {
     /// <summary>
     /// Returns true if it is a profitable time to trade
     /// </summary>
-    public static async Task<bool> checkMarket(IAlpacaTradingClient tClient, IAccount account) {
-        if (spread < totalFees) {
+    public static async Task<bool> checkMarket(IAlpacaTradingClient tClient, IAccount account)
+    {
+        if (spread < totalFees)
+        {
             Console.WriteLine("Spread is Less than Total Fees, Not a Profitable Opportunity to Trade");
             Console.WriteLine($"SPREAD: ${spread}");
             Console.WriteLine($"TOTAL FEES: ${totalFees}");
@@ -113,7 +133,9 @@ internal sealed class ScalpingBot {
             Console.WriteLine($"SELL PRICE: ${sellPrice}");
 
             return false;
-        } else {
+        }
+        else
+        {
             Console.WriteLine($"Buy Order bool: {buyOrder}");
             Console.WriteLine($"Sell Order bool: {sellOrder}");
             Console.WriteLine($"Current Price: ${currentPrice}");
@@ -125,7 +147,8 @@ internal sealed class ScalpingBot {
 
             Console.WriteLine($"Current Position: {currentPosition}");
 
-            if (currentPosition <= 0.01m && (!buyOrder) && currentPrice > buyPrice) {
+            if (currentPosition <= 0.01m && (!buyOrder) && currentPrice > buyPrice)
+            {
                 Console.WriteLine("No Position, No Open Orders, Spread is Greater than Total Fees, Placing Limit Buy Order at Buy Price");
                 decimal availCash = account.TradableCash;
                 IOrder buyLimitOrder = await tClient.PostOrderAsync(OrderSide.Buy.Limit(SYMBOL, OrderQuantity.Notional(NOTIONAL_PERCENT * availCash), buyPrice).WithDuration(TimeInForce.Gtc));
@@ -136,7 +159,8 @@ internal sealed class ScalpingBot {
                 sellOrder = false;
             }
 
-            if (currentPosition >= 0.01m && (!sellOrder) && currentPrice < sellOrderPrice) {
+            if (currentPosition >= 0.01m && (!sellOrder) && currentPrice < sellOrderPrice)
+            {
                 Console.WriteLine("Have Position, No Open Orders, Spread is Greater than Total Fees, Place Limit Sell Order at Sell Price");
                 IPosition symbolPos = await tClient.GetPositionAsync(SYMBOL_NS);
                 IOrder sellLimitOrder = await tClient.PostOrderAsync(OrderSide.Sell.Limit(SYMBOL, OrderQuantity.Fractional(symbolPos.AvailableQuantity), sellPrice).WithDuration(TimeInForce.Gtc));
@@ -147,13 +171,17 @@ internal sealed class ScalpingBot {
                 buyOrder = false;
             }
 
-            if (currentPosition <= 0.01m && buyOrder && currentPrice > (sellOrderPrice * (1 + cutLossThreshold))) {
+            if (currentPosition <= 0.01m && buyOrder && currentPrice > (sellOrderPrice * (1 + cutLossThreshold)))
+            {
                 Console.WriteLine("No Position, Open Buy Order and Current Price above Selling Price, Canceling Buy Limit Order");
-                foreach (Guid orderID in executedOrders) {
-                    try {
+                foreach (Guid orderID in executedOrders)
+                {
+                    try
+                    {
                         await tClient.CancelOrderAsync(orderID);
                     }
-                    catch (RestClientErrorException) {
+                    catch (RestClientErrorException)
+                    {
                     }
                 }
 
@@ -161,13 +189,17 @@ internal sealed class ScalpingBot {
                 buyOrder = false;
             }
 
-            if (currentPosition >= 0.01m && sellOrder && currentPrice < (buyOrderPrice * (1 - cutLossThreshold))) {
+            if (currentPosition >= 0.01m && sellOrder && currentPrice < (buyOrderPrice * (1 - cutLossThreshold)))
+            {
                 Console.WriteLine("Have Position, Open Sell, Current Price Below Buy Price, Canceling Sell Limit Order");
-                foreach (Guid orderID in executedOrders) {
-                    try {
+                foreach (Guid orderID in executedOrders)
+                {
+                    try
+                    {
                         await tClient.CancelOrderAsync(orderID);
                     }
-                    catch (RestClientErrorException) {
+                    catch (RestClientErrorException)
+                    {
                     }
                 }
 
