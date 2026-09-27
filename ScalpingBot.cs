@@ -1,213 +1,268 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 
 using Alpaca.Markets;
 
-namespace CryptoTradingBot;
+namespace CryptoTradingBots;
 
+/// <summary>
+/// Represents a scalping bot for managing crypto trading orders based on real-time market data.
+/// </summary>
 internal static class ScalpingBot
 {
-    private const string SYMBOL = "SHIB/USD";
-    private const string SYMBOL_NS = "SHIBUSD";
+    private const string SYMBOL = "ETH/USD";
+    private const string SYMBOL_NS = "ETHUSD";
+    private const int HISTORICAL_DATA_MINS = 5; // 60
+    private const decimal NOTIONAL_PERCENT = 0.80m;
 
-    private const int FREQUENCY_MINS = 1;
-    private const int HISTORICAL_DATA_MINS = 10;
-    private const int MINS_TO_MILLI = 60000;
-    private const decimal NOTIONAL_PERCENT = 0.5m;
-    private const decimal TRADING_FEE = 0.003m;
+    private const decimal MAKER_FEE = 0.0015m;
+    private const decimal TAKER_FEE = 0.0025m;
+    private const decimal MIN_PROFIT_BUFFER = 0.001m;
 
-    private static bool buyOrder = false;
-    private static bool sellOrder = false;
-    private static decimal buyPrice = 0.0m;
-    private static decimal sellPrice = 0.0m;
-    private static decimal buyOrderPrice = 0.0m;
-    private static decimal sellOrderPrice = 0.0m;
+    private static decimal currentPrice;
+    private static decimal buyPrice;
+    private static decimal sellPrice;
+    private static decimal spread;
+    private static decimal totalFees;
+    private static decimal currentPosition;
 
-    private static decimal currentPrice = 0.0m;
-    private static decimal currentPosition = 0.0m;
-    private static decimal cutLossThreshold = 0.005m;
-    private static decimal spread = 0.0m;
-    private static decimal totalFees = 0.0m;
+    private static readonly Queue<IBar> rollingBars = new();
 
-    private static List<Guid> executedOrders = new List<Guid>();
+    private static Guid? openOrderId = null;
+    private static bool waitingForFill = false;
 
-    public static async Task Main()
+    /// <summary>
+    /// Main entry point for the scalping bot. Initializes clients, fetches historical data, and 
+    /// subscribes to live market data.
+    /// </summary>
+    public static async Task RunAsync()
     {
-        IAlpacaCryptoDataClient dClient = Environments.Paper.GetAlpacaCryptoDataClient(new SecretKey(Constants.KEY_ID, Constants.SECRET_KEY));
-        IAlpacaTradingClient tClient = Environments.Paper.GetAlpacaTradingClient(new SecretKey(Constants.KEY_ID, Constants.SECRET_KEY));
-        IAccount account;
+        // Initialize clients
+        var dataClient = Environments.Live.GetAlpacaCryptoDataClient(
+            new SecretKey(Secrets.KEY_ID, Secrets.SECRET_KEY));
+        var tradingClient = Environments.Paper.GetAlpacaTradingClient(
+            new SecretKey(Secrets.KEY_ID, Secrets.SECRET_KEY));
+        var marketStreamingClient = Environments.Live.GetAlpacaCryptoStreamingClient(
+            new SecretKey(Secrets.KEY_ID, Secrets.SECRET_KEY));
+        await marketStreamingClient.ConnectAndAuthenticateAsync();
 
-        while (true)
+        // Fetch historical data to set initial buy/sell prices, spread, and fees
+        await InitializeMarketData(dataClient);
+
+        // Get minute bars subscription for the specified symbol
+        var subscription = marketStreamingClient.GetMinuteBarSubscription(SYMBOL);
+
+        // Handle incoming minute bars to update position and manage orders
+        subscription.Received += async bar =>
         {
-            Console.WriteLine("-----------------------------------");
-            string currentTime = DateTime.UtcNow.ToString();
-            Console.WriteLine("Current Time: " + currentTime.Substring(currentTime.Length - 10));
-            await getHistoricalData(dClient, tClient, true);
-            account = await tClient.GetAccountAsync();
-            bool checkedMarket = await checkMarket(tClient, account);
-            Console.WriteLine($"Check Market Complete! Returned {checkedMarket}");
-            await Task.Delay(FREQUENCY_MINS * MINS_TO_MILLI);
-        }
-    }
+            Console.WriteLine("-------------------------------");
+            Console.WriteLine(
+                $"{bar.TimeUtc}: {bar.Symbol} Minute Bar | Open: {bar.Open}, High: {bar.High}, " +
+                $"Low: {bar.Low}, Close: {bar.Close}"
+            );
 
-    public static async Task<IReadOnlyList<IBar>> getHistoricalData(IAlpacaCryptoDataClient dClient, IAlpacaTradingClient tClient, bool logInfo)
-    {
-        DateTime end = DateTime.UtcNow;
-        DateTime start = end.AddMinutes(-HISTORICAL_DATA_MINS);
-        IReadOnlyList<IBar> bars = (await dClient.ListHistoricalBarsAsync(new HistoricalCryptoBarsRequest(SYMBOL, start, end, BarTimeFrame.Minute))).Items;
+            UpdateRollingChannel(bar);
+            PrintRollingBars();
 
-        if (logInfo)
-        {
-            writeHistoryToFile(bars);
-            decimal startPrice = bars.First().Open;
-            decimal endPrice = bars.Last().Close;
-            Console.WriteLine($"{SYMBOL} Current (Close) Price: ${endPrice}");
-            decimal percentChange = (endPrice - startPrice) / startPrice;
-            Console.WriteLine($"{SYMBOL} moved {percentChange:P} over the last {HISTORICAL_DATA_MINS} mins.");
-        }
+            await UpdatePosition(tradingClient);
 
-        currentPrice = bars.Last().Close;
-        decimal minLowPrice = bars.First().Low;
-        decimal maxHighPrice = bars.First().High;
-        foreach (IBar bar in bars)
-        {
-            if (minLowPrice > bar.Low)
-            {
-                minLowPrice = bar.Low;
-            }
+            // Manage orders dynamically
+            IAccount account = await tradingClient.GetAccountAsync();
+            await ManageOrders(tradingClient, account);
+        };
 
-            if (maxHighPrice < bar.High)
-            {
-                maxHighPrice = bar.High;
-            }
-        }
+        // Subscribe to the market data stream
+        await marketStreamingClient.SubscribeAsync(subscription);
 
-        buyPrice = minLowPrice * 1.002m;
-        sellPrice = maxHighPrice * 0.998m;
-        spread = sellPrice - buyPrice;
-        totalFees = (buyPrice * TRADING_FEE) + (sellPrice * TRADING_FEE);
-
-        try
-        {
-            IPosition symbolPos = await tClient.GetPositionAsync(SYMBOL_NS);
-            currentPosition = symbolPos.Quantity;
-            buyOrder = false;
-        }
-        catch (RestClientErrorException)
-        {
-            sellOrder = false;
-        }
-
-        return bars;
-    }
-
-    private static void writeHistoryToFile(IReadOnlyList<IBar> bars)
-    {
-        string timeOutput = $"Last {HISTORICAL_DATA_MINS} Minutes Report:\n";
-        string priceOutput = "\n";
-        string currentTime = "";
-        foreach (IBar bar in bars)
-        {
-            currentTime = bar.TimeUtc.ToString();
-            timeOutput += currentTime.Substring(currentTime.Length - 10) + "\n";
-            priceOutput += bar.Vwap + "\n";
-        }
-
-        File.WriteAllText("./HistOutput.txt", timeOutput + priceOutput);
+        Console.WriteLine("Connected to live crypto trades. Waiting for bars...");
+        await Task.Delay(-1);
     }
 
     /// <summary>
-    /// Returns true if it is a profitable time to trade
+    /// Fetches historical bars to initialize buy/sell prices, spread, and fees. Uses a look-back
+    /// period defined by HISTORICAL_DATA_MINS.
     /// </summary>
-    public static async Task<bool> checkMarket(IAlpacaTradingClient tClient, IAccount account)
+    /// <param name="client"></param>
+    private static async Task InitializeMarketData(IAlpacaCryptoDataClient client)
     {
-        if (spread < totalFees)
-        {
-            Console.WriteLine("Spread is Less than Total Fees, Not a Profitable Opportunity to Trade");
-            Console.WriteLine($"SPREAD: ${spread}");
-            Console.WriteLine($"TOTAL FEES: ${totalFees}");
-            Console.WriteLine($"BUY PRICE: ${buyPrice}");
-            Console.WriteLine($"SELL PRICE: ${sellPrice}");
+        DateTime end = DateTime.UtcNow;
+        DateTime start = end.AddMinutes(-HISTORICAL_DATA_MINS);
 
-            return false;
+        var bars = (await client.ListHistoricalBarsAsync(
+            new HistoricalCryptoBarsRequest(SYMBOL, start, end, BarTimeFrame.Minute))).Items;
+
+        foreach (var bar in bars)
+            rollingBars.Enqueue(bar);
+
+        RecalculateChannel();
+
+        currentPrice = bars[^1].Close;
+
+        // Initially assume worst case fees
+        totalFees = (buyPrice * TAKER_FEE) + (sellPrice * TAKER_FEE);
+
+        Console.WriteLine($"Historical data for {SYMBOL} fetched.");
+        Console.WriteLine(
+            $"Current Price: {currentPrice}, Buy: {buyPrice}, Sell: {sellPrice}, Spread: {spread}"
+        );
+    }
+
+    /// <summary>
+    /// Maintain rolling 10 minute bar window
+    /// </summary>
+    private static void UpdateRollingChannel(IBar newBar)
+    {
+        rollingBars.Enqueue(newBar);
+
+        if (rollingBars.Count > HISTORICAL_DATA_MINS)
+            rollingBars.Dequeue();
+
+        currentPrice = newBar.Close;
+
+        RecalculateChannel();
+    }
+
+    /// <summary>
+    /// Utility function to print the current rolling bars for debugging purposes
+    /// </summary>
+    private static void PrintRollingBars()
+    {
+    Console.WriteLine("----- Rolling 10-min Bars -----");
+    int i = 1;
+    foreach (var bar in rollingBars)
+    {
+        Console.WriteLine(
+            $"Bar {i}: Time={bar.TimeUtc}, Open={bar.Open}, High={bar.High}, Low={bar.Low}, Close={bar.Close}"
+        );
+        i++;
+    }
+    Console.WriteLine("-------------------------------");
+}
+
+    /// <summary>
+    /// Recalculate the rolling price channel
+    /// </summary>
+    private static void RecalculateChannel()
+    {
+        buyPrice = rollingBars.Min(x => x.Low) * 1.002m;
+        sellPrice = rollingBars.Max(x => x.High) * 0.998m;
+
+        spread = sellPrice - buyPrice;
+    }
+
+    private static async Task UpdatePosition(IAlpacaTradingClient client)
+    {
+        try
+        {
+            var pos = await client.GetPositionAsync(SYMBOL_NS);
+            currentPosition = pos.Quantity;
         }
+        catch (RestClientErrorException ex) when (ex.Message.Contains("position does not exist"))
+        {
+            currentPosition = 0;
+        }
+
+        Console.WriteLine($"Current Position: {currentPosition}");
+    }
+
+    /// <summary>
+    /// Dynamically calculates total fees based on whether orders are likely taker or maker
+    /// </summary>
+    private static void UpdateFees()
+    {
+        bool buyLikelyTaker = currentPrice >= buyPrice * 0.999m; // Close to buy price
+        bool sellLikelyTaker = currentPrice <= sellPrice * 1.001m; // Close to sell price
+
+        decimal buyFee = buyLikelyTaker ? TAKER_FEE : MAKER_FEE;
+        decimal sellFee = sellLikelyTaker ? TAKER_FEE : MAKER_FEE;
+
+        totalFees = (buyPrice * buyFee) + (sellPrice * sellFee);
+        Console.WriteLine(
+            $"Fees updated | BuyFee: {buyFee}, SellFee: {sellFee}, TotalFees: {totalFees}"
+        );
+    }
+
+    /// <summary>
+    /// Manages order placement and cancellation based on current market conditions, position, and 
+    /// order status
+    /// </summary>
+    /// <param name="client"></param>
+    /// <param name="account"></param>
+    private static async Task ManageOrders(IAlpacaTradingClient client, IAccount account)
+    {
+        UpdateFees();
+
+        decimal minProfit = totalFees + (buyPrice * MIN_PROFIT_BUFFER);
+        if (spread <= minProfit)
+        {
+            Console.WriteLine($"Spread ({spread}) too small to cover fees and profit buffer " + 
+                $"{minProfit}. No trades will be placed."
+            );
+            Console.WriteLine("Spread too small to trade.");
+            return;
+        }
+
+        if (waitingForFill && openOrderId != null)
+        {
+            var orderStatus = (await client.GetOrderAsync(openOrderId.Value)).OrderStatus;
+            if (orderStatus == OrderStatus.Filled || orderStatus == OrderStatus.Canceled)
+            {
+                waitingForFill = false;
+                openOrderId = null;
+            }
+            return;
+        }
+
+        if (currentPosition <= 0)
+            await PlaceBuy(client, account);
         else
-        {
-            Console.WriteLine($"Buy Order bool: {buyOrder}");
-            Console.WriteLine($"Sell Order bool: {sellOrder}");
-            Console.WriteLine($"Current Price: ${currentPrice}");
-            Console.WriteLine($"Buy Price: ${buyPrice}");
-            Console.WriteLine($"Sell Price: ${sellPrice}");
+            await PlaceSell(client);
+    }
 
-            Console.WriteLine($"Buy Order Price: ${buyOrderPrice}");
-            Console.WriteLine($"Sell Order Price: ${sellOrderPrice}");
+    /// <summary>
+    /// Places a buy limit order if conditions are favorable and we are not already in a position
+    /// </summary>
+    /// <param name="client"></param>
+    /// <param name="account"></param>
+    private static async Task PlaceBuy(IAlpacaTradingClient client, IAccount account)
+    {
+        if (currentPrice <= buyPrice) return;
 
-            Console.WriteLine($"Current Position: {currentPosition}");
+        decimal cash = account.TradableCash;
+        var order = await client.PostOrderAsync(
+            OrderSide.Buy.Limit(
+                SYMBOL,
+                OrderQuantity.Notional(cash * NOTIONAL_PERCENT),
+                buyPrice)
+            .WithDuration(TimeInForce.Gtc));
 
-            if (currentPosition <= 0.01m && (!buyOrder) && currentPrice > buyPrice)
-            {
-                Console.WriteLine("No Position, No Open Orders, Spread is Greater than Total Fees, Placing Limit Buy Order at Buy Price");
-                decimal availCash = account.TradableCash;
-                IOrder buyLimitOrder = await tClient.PostOrderAsync(OrderSide.Buy.Limit(SYMBOL, OrderQuantity.Notional(NOTIONAL_PERCENT * availCash), buyPrice).WithDuration(TimeInForce.Gtc));
-                buyOrderPrice = buyPrice;
-                sellOrderPrice = sellPrice;
-                executedOrders.Add(buyLimitOrder.OrderId);
-                buyOrder = true;
-                sellOrder = false;
-            }
+        openOrderId = order.OrderId;
+        waitingForFill = true;
 
-            if (currentPosition >= 0.01m && (!sellOrder) && currentPrice < sellOrderPrice)
-            {
-                Console.WriteLine("Have Position, No Open Orders, Spread is Greater than Total Fees, Place Limit Sell Order at Sell Price");
-                IPosition symbolPos = await tClient.GetPositionAsync(SYMBOL_NS);
-                IOrder sellLimitOrder = await tClient.PostOrderAsync(OrderSide.Sell.Limit(SYMBOL, OrderQuantity.Fractional(symbolPos.AvailableQuantity), sellPrice).WithDuration(TimeInForce.Gtc));
-                buyOrderPrice = buyPrice;
-                sellOrderPrice = sellPrice;
-                executedOrders.Add(sellLimitOrder.OrderId);
-                sellOrder = true;
-                buyOrder = false;
-            }
+        Console.WriteLine($"BUY LIMIT placed at {buyPrice}");
+    }
 
-            if (currentPosition <= 0.01m && buyOrder && currentPrice > (sellOrderPrice * (1 + cutLossThreshold)))
-            {
-                Console.WriteLine("No Position, Open Buy Order and Current Price above Selling Price, Canceling Buy Limit Order");
-                foreach (Guid orderID in executedOrders)
-                {
-                    try
-                    {
-                        await tClient.CancelOrderAsync(orderID);
-                    }
-                    catch (RestClientErrorException)
-                    {
-                    }
-                }
+    /// <summary>
+    /// Places a sell limit order if conditions are favorable and we currently hold a position
+    /// </summary>
+    /// <param name="client"></param>
+    private static async Task PlaceSell(IAlpacaTradingClient client)
+    {
+        if (currentPrice >= sellPrice) return;
 
-                executedOrders.Clear();
-                buyOrder = false;
-            }
+        var pos = await client.GetPositionAsync(SYMBOL_NS);
+        var order = await client.PostOrderAsync(
+            OrderSide.Sell.Limit(
+                SYMBOL,
+                OrderQuantity.Fractional(pos.AvailableQuantity),
+                sellPrice)
+            .WithDuration(TimeInForce.Gtc));
 
-            if (currentPosition >= 0.01m && sellOrder && currentPrice < (buyOrderPrice * (1 - cutLossThreshold)))
-            {
-                Console.WriteLine("Have Position, Open Sell, Current Price Below Buy Price, Canceling Sell Limit Order");
-                foreach (Guid orderID in executedOrders)
-                {
-                    try
-                    {
-                        await tClient.CancelOrderAsync(orderID);
-                    }
-                    catch (RestClientErrorException)
-                    {
-                    }
-                }
+        openOrderId = order.OrderId;
+        waitingForFill = true;
 
-                executedOrders.Clear();
-                sellOrder = false;
-            }
-
-            return true;
-        }
+        Console.WriteLine($"SELL LIMIT placed at {sellPrice}");
     }
 }

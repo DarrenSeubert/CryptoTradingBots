@@ -1,0 +1,66 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0 # Fetch full history
+
+      - name: Check if tag commit is on main
+        id: tag_on_main
+        continue-on-error: true
+        run: |
+          git fetch origin main
+          TAG_COMMIT=$(git rev-parse ${{ github.ref_name }})
+          if git merge-base --is-ancestor $TAG_COMMIT origin/main; then
+            echo "Tag commit is present on main."
+            echo "on_main=true" >> $GITHUB_OUTPUT
+          else
+            echo "Tag commit is NOT present on main."
+            echo "on_main=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate changelog
+        id: changelog
+        if: steps.tag_on_main.outputs.on_main == 'true'
+        run: |
+          # Find previous tag matching semantic version pattern, excluding current tag
+          PREV_TAG=$(git tag --sort=-creatordate | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^${{ github.ref_name }}$" | tail -n 1)
+          REPO_URL="https://github.com/DarrenSeubert/CryptoTradingBots"
+          if [ -z "$PREV_TAG" ]; then
+            # If no previous tag, show all history up to this tag
+            CHANGELOG=$(git log --oneline ${{ github.ref_name }})
+            FULL_DIFF_URL="$REPO_URL/commits/${{ github.ref_name }}"
+          else
+            # Show commits between previous tag and this tag
+            CHANGELOG=$(git log --oneline $PREV_TAG..${{ github.ref_name }})
+            FULL_DIFF_URL="$REPO_URL/compare/$PREV_TAG...${{ github.ref_name }}"
+          fi
+          # Set outputs for next step
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "full_diff_url=$FULL_DIFF_URL" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: steps.tag_on_main.outputs.on_main == 'true'
+        uses: softprops/action-gh-release@v2.6.1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: |
+            ## What's Changed
+
+            ${{ steps.changelog.outputs.changelog }}
+
+            **Full Diff**: ${{ steps.changelog.outputs.full_diff_url }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

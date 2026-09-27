@@ -2,7 +2,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.5.2.0
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CryptoTradingBot", "CryptoTradingBot.csproj", "{8790F209-AFD3-8E66-18B8-BE987118338C}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CryptoTradingBots", "CryptoTradingBots.csproj", "{4114D9E5-7B7D-4BA1-7A15-CA29F4C71170}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -10,15 +10,15 @@ Global
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{8790F209-AFD3-8E66-18B8-BE987118338C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{8790F209-AFD3-8E66-18B8-BE987118338C}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{8790F209-AFD3-8E66-18B8-BE987118338C}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{8790F209-AFD3-8E66-18B8-BE987118338C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4114D9E5-7B7D-4BA1-7A15-CA29F4C71170}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4114D9E5-7B7D-4BA1-7A15-CA29F4C71170}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4114D9E5-7B7D-4BA1-7A15-CA29F4C71170}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4114D9E5-7B7D-4BA1-7A15-CA29F4C71170}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
-		SolutionGuid = {126418B7-A40A-4A9D-8D39-3B8532B94125}
+		SolutionGuid = {BC360F17-0B6D-4D99-AC06-EFA9D8B79E99}
 	EndGlobalSection
 EndGlobal

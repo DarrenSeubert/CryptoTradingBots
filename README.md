@@ -1,2 +1,2 @@
-# CryptoTradingBot
- A Bot that Trades Cryptocurrencies using Alpaca.
+# CryptoTradingBots
+ Bots that Trades Cryptocurrencies using Alpaca.
